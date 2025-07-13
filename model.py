@@ -1,10 +1,10 @@
 import torch
-import torch.nn as nn
+import torchvision
+from torchvision.models.detection import detr_resnet50
+from torchvision.models.detection.transform import GeneralizedRCNNTransform
 
-def get_model(num_classes: int = 2, pretrained: bool = True):
-    print("[i] Loading DETR from Facebook's repo via torch.hub...")
-    model = torch.hub.load('facebookresearch/detr:main', 'detr_resnet50', pretrained=pretrained)
-    model.class_embed = nn.Linear(model.class_embed.in_features, num_classes)
+def get_model(num_classes: int, pretrained: bool = True):
+    model = detr_resnet50(pretrained=pretrained, num_classes=num_classes)
     return model
 
 
