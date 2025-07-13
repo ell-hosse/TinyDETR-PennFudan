@@ -9,64 +9,75 @@ from transformers import DetrImageProcessor
 processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50")
 
 class PennFudanDataset(Dataset):
-    def __init__(self, root):
+    def __init__(self, root: str):
         self.root = root
-        self.imgs = sorted(os.listdir(os.path.join(root, "PNGImages")))
+        self.imgs  = sorted(os.listdir(os.path.join(root, "PNGImages")))
         self.masks = sorted(os.listdir(os.path.join(root, "PedMasks")))
 
     def __len__(self):
         return len(self.imgs)
 
     def __getitem__(self, idx):
-        # Load image & mask
         img_path  = os.path.join(self.root, "PNGImages", self.imgs[idx])
-        mask_path = os.path.join(self.root, "PedMasks", self.masks[idx])
-        img = Image.open(img_path).convert("RGB")
-        mask = Image.open(mask_path)
-        mask = np.array(mask)
+        mask_path = os.path.join(self.root, "PedMasks",  self.masks[idx])
+        img  = Image.open(img_path).convert("RGB")
+        mask = np.array(Image.open(mask_path))
 
-        # Extract instances
-        obj_ids = np.unique(mask)[1:]  # drop background=0
-        masks = mask == obj_ids[:, None, None]  # shape [N, H, W]
+        obj_ids = np.unique(mask)[1:]   # drop background=0
+        boxes   = []
+        labels  = []
+        areas   = []
+        iscrowd = []
 
-        boxes = []
-        for m in masks:
-            pos = np.where(m)
-            x0, y0 = pos[1].min(), pos[0].min()
-            x1, y1 = pos[1].max(), pos[0].max()
+        for oid in obj_ids:
+            m = mask == oid
+            ys, xs = np.where(m)
+            x0, y0 = xs.min(), ys.min()
+            x1, y1 = xs.max(), ys.max()
             boxes.append([x0, y0, x1, y1])
+            labels.append(1)              # single class: pedestrian
+            areas.append((x1 - x0) * (y1 - y0))
+            iscrowd.append(0)
 
-        area = [(x1 - x0) * (y1 - y0) for (x0, y0, x1, y1) in boxes]
-        labels = [1] * len(boxes)
-        iscrowd = [0] * len(boxes)
+        target = {"image_id": idx,
+                  "annotations": [
+                    {"bbox": b, "category_id": lab,
+                     "area": a, "iscrowd": c}
+                    for b, lab, a, c in zip(boxes, labels, areas, iscrowd)
+                  ]}
 
-        target = {
-            "image_id": idx,
-            "annotations": [
-                {
-                    "bbox": box,
-                    "category_id": label,
-                    "area": a,
-                    "iscrowd": c,
-                }
-                for box, label, a, c in zip(boxes, labels, area, iscrowd)
-            ]
+        encoding = processor(images=img,
+                             annotations=target,
+                             return_tensors="pt")
+        encoding = {
+            "pixel_values": encoding["pixel_values"].squeeze(0),  # → [3, H, W]
+            "pixel_mask":   encoding["pixel_mask"].squeeze(0),    # → [H, W]
+            "labels":       encoding["labels"][0]                 # dict with tensors
         }
-
-        # DETR Hugging Face expects PIL input, returns pixel values + encoding
-        processed = processor(images=img, annotations=target, return_tensors="pt")
-        processed["pixel_values"] = processed["pixel_values"].squeeze(0)  # [1,3,H,W] → [3,H,W]
-        return processed
+        return encoding
 
 def collate_fn(batch):
-    pixel_values = torch.stack([b["pixel_values"] for b in batch])
-    labels = [b["labels"] for b in batch]
-    return {"pixel_values": pixel_values, "labels": labels}
+    pixel_values = [item["pixel_values"] for item in batch]
+    pixel_masks = [item["pixel_mask"]   for item in batch]
+    labels = [item["labels"]       for item in batch]
+
+    batch_encoding = processor.pad(
+        {
+            "pixel_values": pixel_values,
+            "pixel_mask":   pixel_masks,
+            "labels":       labels
+        },
+        return_tensors="pt"
+    )
+    return batch_encoding
 
 def get_dataloaders():
-    dataset = PennFudanDataset(DATA_ROOT)
-    n = int(0.8 * len(dataset))
-    train_ds, val_ds = torch.utils.data.random_split(dataset, [n, len(dataset) - n])
-    train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  collate_fn=collate_fn)
-    val_dl   = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
+    ds = PennFudanDataset(DATA_ROOT)
+    n  = int(0.8 * len(ds))
+    train_ds, val_ds = torch.utils.data.random_split(ds, [n, len(ds) - n])
+
+    train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
+                          collate_fn=collate_fn, num_workers=2)
+    val_dl = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False,
+                          collate_fn=collate_fn, num_workers=2)
     return train_dl, val_dl
