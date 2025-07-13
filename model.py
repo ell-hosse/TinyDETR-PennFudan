@@ -23,7 +23,11 @@ class DETRModel(nn.Module):
         images: list of PIL.Image or tensors [3,H,W]
         targets: list of dicts with 'class_labels' and 'boxes' (normalized)
         """
-        inputs = self.processor(images=images, return_tensors="pt")
+        inputs = self.processor(
+            images=images,
+            annotations=targets,
+            return_tensors="pt"
+        )
 
         for k, v in inputs.items():
             if torch.is_tensor(v):

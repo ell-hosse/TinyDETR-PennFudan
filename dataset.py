@@ -29,18 +29,23 @@ class PennFudanDataset(Dataset):
         masks = mask == obj_ids[:, None, None]  # shape [N, H, W]
 
         # Compute bounding boxes
-        boxes = []
+        boxes_xyxy = []
         for m in masks:
             ys, xs = np.where(m)
-            boxes.append([xs.min(), ys.min(), xs.max(), ys.max()])
+            boxes_xyxy.append([xs.min(), ys.min(), xs.max(), ys.max()])
 
-        # Build target dict
-        boxes = torch.as_tensor(boxes, dtype=torch.float32)
-        labels = torch.ones((len(boxes),), dtype=torch.int64)  # only 1 class: "person
+        boxes_xywh = [
+            [x1, y1, x2 - x1, y2 - y1]
+            for x1, y1, x2, y2 in boxes_xyxy
+        ]
+        labels = [1] * len(boxes_xywh)  # 1 = “person”
 
         target = {
-            "class_labels": labels,  # renamed from 'labels'
-            "boxes": boxes  # [N, 4] in absolute coords or normalized to [0,1]
+            "image_id": idx,
+            "annotations": [
+                {"bbox": box, "category_id": lab}
+                for box, lab in zip(boxes_xywh, labels)
+            ]
         }
 
         # resize to 800×800 for DETR
