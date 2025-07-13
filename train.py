@@ -1,11 +1,9 @@
 import torch
 import argparse
-from transformers import AdamW
+from torch.optim import AdamW
 from tqdm import tqdm
-
 from model import get_model, get_device
 from dataset import get_dataloaders
-
 import config as C
 
 
