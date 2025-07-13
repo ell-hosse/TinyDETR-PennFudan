@@ -1,7 +1,5 @@
-torch>=1.10
-torchvision
-transformers
+torch>=1.14
+torchvision>=0.15
 tqdm
-Pillow
-numpy
+opencv-python
 matplotlib

@@ -1,80 +1,55 @@
-# visualize.py
-import random
+import argparse, random
 import torch
-import numpy as np
 import matplotlib.pyplot as plt
-from PIL import Image
-from torchvision import transforms, utils
-from model import DETRModel
-from dataset import PennFudanDataset, collate_fn
-from config import DATA_ROOT, DEVICE
+import matplotlib.patches as patches
+from pathlib import Path
 
-model = DETRModel().to(DEVICE)
-ckpt   = torch.load("detr_pennfudan.pth", map_location=DEVICE)
-model.load_state_dict(ckpt["model_state_dict"])
-model.eval()
+import config as C
+from dataset import PennFudanDataset
+from model import get_model, get_device
 
-transform = transforms.Compose([
-    transforms.Resize((800,800)),
-    transforms.ToTensor(),
-])
-full_ds = PennFudanDataset(DATA_ROOT, transforms=transform)
-n = len(full_ds)
-split = int(0.8*n)
-val_ds = torch.utils.data.Subset(full_ds, list(range(split, n)))
+PALETTE = ["red", "lime", "yellow", "cyan", "magenta"]
 
-indices = random.sample(range(len(val_ds)), k=min(10, len(val_ds)))
-samples = [val_ds[i] for i in indices]
+def plot_prediction(img, boxes, scores):
+    fig, ax = plt.subplots(figsize=(6,9))
+    ax.imshow(img.permute(1,2,0))
+    for i, (box,s) in enumerate(zip(boxes, scores)):
+        xmin, ymin, xmax, ymax = box
+        rect = patches.Rectangle(
+            (xmin, ymin), xmax - xmin, ymax - ymin,
+            linewidth=2, edgecolor=PALETTE[i % len(PALETTE)],
+            facecolor='none', alpha=0.8)
+        ax.add_patch(rect)
+        ax.text(xmin, ymin - 3, f"{s:.2f}", color=rect.get_edgecolor(),
+                fontsize=9, weight="bold")
+    ax.axis("off")
+    plt.show()
 
-fig, axes = plt.subplots(len(samples), 3, figsize=(12, 4*len(samples)))
-for row, (img, target) in enumerate(samples):
-    img_cpu = img.cpu()
-    axes[row,0].imshow(img_cpu.permute(1,2,0))
-    axes[row,0].set_title("Original Image")
-    axes[row,0].axis("off")
+def main(args):
+    device = get_device(args.device)
+    dataset = PennFudanDataset(C.DATA_ROOT, transforms=False)
 
-    # reconstruct mask from target["boxes"] & target from PennFudanDataset
-    mask = Image.open(
-        f"{DATA_ROOT}/PedMasks/{full_ds.masks[split+indices[row]]}"
-    )
-    axes[row,1].imshow(mask, cmap="gray")
-    axes[row,1].set_title("GT Segmentation Mask")
-    axes[row,1].axis("off")
+    model = get_model(num_classes=C.NUM_CLASSES)
+    model.load_state_dict(torch.load(args.weights, map_location="cpu"))
+    model.to(device).eval()
 
-    # DETR expects list of images
-    with torch.no_grad():
-        outputs = model([img.to(DEVICE)], targets=None)
-    # logits [1,Q,C+1], boxes [1,Q,4]
-    logits = outputs.logits.softmax(-1)[0,...-1]  # no-object scores at last class
-    scores, labels = outputs.logits[0].softmax(-1).max(-1)
-    boxes = outputs.pred_boxes[0]  # normalized xyxy
+    # pick random images
+    indices = random.sample(range(len(dataset)), k=args.num_images)
+    for idx in indices:
+        img, _ = dataset[idx]
+        with torch.no_grad():
+            out = model([img.to(device)])[0]
 
-    # select high-confidence detections
-    keep = scores > 0.5
-    boxes = boxes[keep]
-    scores= scores[keep]
+        keep = out["scores"] > C.CONF_THRESHOLD
+        boxes = out["boxes"][keep].cpu()
+        scores = out["scores"][keep].cpu()
+        plot_prediction(img, boxes, scores)
 
-    # denormalize boxes to image size
-    H,W = img.shape[1], img.shape[2]
-    boxes = boxes.cpu().numpy()
-    boxes[:,[0,2]] *= W
-    boxes[:,[1,3]] *= H
-
-    # overlay boxes
-    axes[row,2].imshow(img_cpu.permute(1,2,0))
-    for box, sc in zip(boxes, scores):
-        x1,y1,x2,y2 = box
-        rect = plt.Rectangle(
-            (x1,y1), x2-x1, y2-y1,
-            fill=False, edgecolor="r", linewidth=2
-        )
-        axes[row,2].add_patch(rect)
-        axes[row,2].text(
-            x1, y1-5, f"{sc:.2f}",
-            color="yellow", backgroundcolor="black", fontsize=8
-        )
-    axes[row,2].set_title("Predicted Boxes")
-    axes[row,2].axis("off")
-
-plt.tight_layout()
-plt.show()
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--weights", default="checkpoints/best.pth",
+                    help="Path to checkpoint .pth")
+    ap.add_argument("--device", default=None)
+    ap.add_argument("--num_images", type=int, default=3)
+    args = ap.parse_args()
+    main(args)
