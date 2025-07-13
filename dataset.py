@@ -3,13 +3,14 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
 from config import DATA_ROOT, BATCH_SIZE
+from transformers import DetrImageProcessor
+
+processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50")
 
 class PennFudanDataset(Dataset):
-    def __init__(self, root, transforms=None):
+    def __init__(self, root):
         self.root = root
-        self.transforms = transforms
         self.imgs = sorted(os.listdir(os.path.join(root, "PNGImages")))
         self.masks = sorted(os.listdir(os.path.join(root, "PedMasks")))
 
@@ -24,59 +25,48 @@ class PennFudanDataset(Dataset):
         mask = Image.open(mask_path)
         mask = np.array(mask)
 
-        # Each distinct ID >0 is one pedestrian
+        # Extract instances
         obj_ids = np.unique(mask)[1:]  # drop background=0
         masks = mask == obj_ids[:, None, None]  # shape [N, H, W]
 
-        # Compute bounding boxes
-        boxes_xyxy = []
+        boxes = []
         for m in masks:
-            ys, xs = np.where(m)
-            boxes_xyxy.append([xs.min(), ys.min(), xs.max(), ys.max()])
+            pos = np.where(m)
+            x0, y0 = pos[1].min(), pos[0].min()
+            x1, y1 = pos[1].max(), pos[0].max()
+            boxes.append([x0, y0, x1, y1])
 
-        boxes_xywh = []
-        areas = []
-        iscrowd = []
-
-        for (x1,y1,x2,y2) in boxes_xyxy:
-            w = x2 - x1
-            h = y2 - y1
-            boxes_xywh.append([x1, y1, w, h])
-            areas.append(w * h)
-            iscrowd.append(0)
-
-        labels = [1] * len(boxes_xywh)
-
-        annots = []
-        for box, lab, area, crowd in zip(boxes_xywh, labels, areas, iscrowd):
-            annots.append({
-                "bbox": box,
-                "category_id": int(lab),
-                "area": float(area),
-                "iscrowd": int(crowd),
-            })
+        area = [(x1 - x0) * (y1 - y0) for (x0, y0, x1, y1) in boxes]
+        labels = [1] * len(boxes)
+        iscrowd = [0] * len(boxes)
 
         target = {
             "image_id": idx,
-            "annotations": annots
+            "annotations": [
+                {
+                    "bbox": box,
+                    "category_id": label,
+                    "area": a,
+                    "iscrowd": c,
+                }
+                for box, label, a, c in zip(boxes, labels, area, iscrowd)
+            ]
         }
 
-        # resize to 800×800 for DETR
-        if self.transforms:
-            img = self.transforms(img)
-
-        return img, target
+        # DETR Hugging Face expects PIL input, returns pixel values + encoding
+        processed = processor(images=img, annotations=target, return_tensors="pt")
+        processed["pixel_values"] = processed["pixel_values"].squeeze(0)  # [1,3,H,W] → [3,H,W]
+        return processed
 
 def collate_fn(batch):
-    return tuple(zip(*batch))
+    pixel_values = torch.stack([b["pixel_values"] for b in batch])
+    labels = [b["labels"] for b in batch]
+    return {"pixel_values": pixel_values, "labels": labels}
 
 def get_dataloaders():
-    transform = transforms.Resize((800,800))
-    dataset = PennFudanDataset(DATA_ROOT, transforms=transform)
-    # split 80/20
-    n_train = int(0.8 * len(dataset))
-    train_ds, val_ds = torch.utils.data.random_split(dataset, [n_train, len(dataset) - n_train])
-
+    dataset = PennFudanDataset(DATA_ROOT)
+    n = int(0.8 * len(dataset))
+    train_ds, val_ds = torch.utils.data.random_split(dataset, [n, len(dataset) - n])
     train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,  collate_fn=collate_fn)
-    val_dl = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
+    val_dl   = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
     return train_dl, val_dl
