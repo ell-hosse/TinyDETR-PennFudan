@@ -18,17 +18,15 @@ class PennFudanDataset(Dataset):
         return len(self.imgs)
 
     def __getitem__(self, idx):
-        img_path   = self.root / "PNGImages" / self.imgs[idx]
-        mask_path  = self.root / "PedMasks" / self.masks[idx]
-        img  = Image.open(img_path).convert("RGB")
+        img_path = self.root / "PNGImages" / self.imgs[idx]
+        mask_path = self.root / "PedMasks" / self.masks[idx]
+        img = Image.open(img_path).convert("RGB")
         mask = Image.open(mask_path)
 
-        # Each pedestrian has unique (R,G,B) value >0, background == 0
         mask = np.array(mask, dtype=np.int32)
         obj_ids = np.unique(mask)
         obj_ids = obj_ids[obj_ids != 0]
 
-        # Split mask per instance
         masks = mask == obj_ids[:, None, None]
 
         boxes = []
@@ -38,9 +36,9 @@ class PennFudanDataset(Dataset):
             ymin, ymax = pos[0].min(), pos[0].max()
             boxes.append([xmin, ymin, xmax, ymax])
 
-        boxes  = torch.as_tensor(boxes, dtype=torch.float32)
-        labels = torch.ones((len(boxes),), dtype=torch.int64)  # pedestrian = 1
-        masks  = torch.as_tensor(masks, dtype=torch.uint8)
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        labels = torch.ones((len(boxes),), dtype=torch.int64)
+        masks = torch.as_tensor(masks, dtype=torch.uint8)
         image_id = torch.tensor([idx])
         area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
         iscrowd = torch.zeros((len(boxes),), dtype=torch.int64)
