@@ -34,18 +34,31 @@ class PennFudanDataset(Dataset):
             ys, xs = np.where(m)
             boxes_xyxy.append([xs.min(), ys.min(), xs.max(), ys.max()])
 
-        boxes_xywh = [
-            [x1, y1, x2 - x1, y2 - y1]
-            for x1, y1, x2, y2 in boxes_xyxy
-        ]
-        labels = [1] * len(boxes_xywh)  # 1 = “person”
+        boxes_xywh = []
+        areas = []
+        iscrowd = []
+
+        for (x1,y1,x2,y2) in boxes_xyxy:
+            w = x2 - x1
+            h = y2 - y1
+            boxes_xywh.append([x1, y1, w, h])
+            areas.append(w * h)
+            iscrowd.append(0)
+
+        labels = [1] * len(boxes_xywh)
+
+        annots = []
+        for box, lab, area, crowd in zip(boxes_xywh, labels, areas, iscrowd):
+            annots.append({
+                "bbox": box,
+                "category_id": int(lab),
+                "area": float(area),
+                "iscrowd": int(crowd),
+            })
 
         target = {
             "image_id": idx,
-            "annotations": [
-                {"bbox": box, "category_id": lab}
-                for box, lab in zip(boxes_xywh, labels)
-            ]
+            "annotations": annots
         }
 
         # resize to 800×800 for DETR
