@@ -1,96 +1,72 @@
-import torch, time, datetime, argparse, os
-from torch.utils.data import DataLoader, random_split
-from torch.optim.lr_scheduler import StepLR
-import torchvision
+import torch
+import argparse
+from transformers import AdamW
 from tqdm import tqdm
 
-import config as C
-from dataset import PennFudanDataset, collate_fn
 from model import get_model, get_device
+from dataset import get_dataloaders
 
-def train_one_epoch(model, optimizer, data_loader, device, epoch):
+import config as C
+
+
+def train_one_epoch(model, dataloader, optimizer, device, epoch):
     model.train()
-    epoch_loss = 0
-    for images, targets in tqdm(data_loader, desc=f"Epoch {epoch}", leave=False):
-        images = list(img.to(device) for img in images)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+    total_loss = 0.0
 
-        loss_dict = model(images, targets)
-        losses = sum(loss for loss in loss_dict.values())
+    loop = tqdm(dataloader, desc=f"Epoch {epoch}", leave=False)
+    for batch in loop:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        loss = outputs.loss
 
         optimizer.zero_grad()
-        losses.backward()
+        loss.backward()
         optimizer.step()
 
-        epoch_loss += losses.item()
-    return epoch_loss / len(data_loader)
+        total_loss += loss.item()
+        loop.set_postfix(loss=loss.item())
+
+    return total_loss / len(dataloader)
 
 
 @torch.no_grad()
-def evaluate(model, data_loader, device):
+def evaluate(model, dataloader, device):
     model.eval()
-    total = correct = 0
-    for images, targets in data_loader:
-        images = [img.to(device) for img in images]
-        outputs = model(images)
-        for out, tgt in zip(outputs, targets):
-            # Very cheap metric: did we detect at least 1 pedestrian?
-            has_ped = (out["scores"] > 0.5).any().item()
-            correct += int(has_ped)
-            total += 1
-    return correct / total
+    total_loss = 0.0
+
+    for batch in dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        outputs = model(**batch)
+        total_loss += outputs.loss.item()
+
+    return total_loss / len(dataloader)
 
 
 def main(args):
     device = get_device(args.device)
+    model = get_model(num_classes=C.NUM_CLASSES, pretrained=True).to(device)
+    train_dl, val_dl = get_dataloaders()
 
-    full_ds = PennFudanDataset(C.DATA_ROOT, transforms=True)
-    val_len = int(0.2 * len(full_ds))
-    train_ds, val_ds = random_split(full_ds, [len(full_ds) - val_len, val_len])
-    train_ds.dataset.transforms_flag = True   # make sure augmentation ON
-    val_ds.dataset.transforms_flag = False  # no aug for val
+    optimizer = AdamW(model.parameters(), lr=C.LR, weight_decay=C.WEIGHT_DECAY)
 
-    train_loader = DataLoader(train_ds, batch_size=C.BATCH_SIZE, shuffle=True,
-                              num_workers=C.NUM_WORKERS, collate_fn=collate_fn)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False,
-                              num_workers=C.NUM_WORKERS, collate_fn=collate_fn)
+    best_val_loss = float("inf")
 
-    model = get_model(num_classes=C.NUM_CLASSES)
-    model.to(device)
-
-    # Param groups give backbone lower LR
-    param_dicts = [
-        {"params": [p for n, p in model.named_parameters() if "backbone" not in n
-                                                  and p.requires_grad]},
-        {"params": [p for n, p in model.named_parameters() if "backbone" in n
-                                                  and p.requires_grad],
-         "lr": C.LR_BACKBONE},
-    ]
-    optimizer = torch.optim.AdamW(param_dicts, lr=C.LR, weight_decay=C.WEIGHT_DECAY)
-    lr_scheduler = StepLR(optimizer, step_size=C.LR_DROP_EPOCHS, gamma=0.1)
-
-    best_acc = 0.0
     for epoch in range(1, C.EPOCHS + 1):
-        loss = train_one_epoch(model, optimizer, train_loader, device, epoch)
-        acc  = evaluate(model, val_loader, device)
-        lr_scheduler.step()
+        train_loss = train_one_epoch(model, train_dl, optimizer, device, epoch)
+        val_loss = evaluate(model, val_dl, device)
 
-        print(f"[{epoch:02}/{C.EPOCHS}] loss={loss:.4f}  val-acc={acc*100:.1f}%")
-        ckpt_path = C.CKPT_DIR / f"epoch{epoch:02}.pth"
-        torch.save({"model": model.state_dict(),
-                    "epoch": epoch,
-                    "acc": acc}, ckpt_path)
+        print(f"[{epoch:02}/{C.EPOCHS}] Train loss: {train_loss:.4f}  |  Val loss: {val_loss:.4f}")
 
-        # Save best
-        if acc > best_acc:
+        if val_loss < best_val_loss:
             torch.save(model.state_dict(), C.CKPT_DIR / "best.pth")
-            best_acc = acc
+            best_val_loss = val_loss
+            print(f"Best model saved at epoch {epoch}")
 
-    print(f"Training finished. Best val acc: {best_acc*100:.1f}%")
+    print("Training complete.")
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--device", default=None, help="'cuda'|'cpu' (default: auto)")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--device", default=None, help="'cuda' or 'cpu' (default: auto)")
+    args = parser.parse_args()
     main(args)
