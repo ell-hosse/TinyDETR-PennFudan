@@ -53,10 +53,7 @@ def collate_fn(batch):
     return tuple(zip(*batch))
 
 def get_dataloaders():
-    transform = transforms.Compose([
-        transforms.Resize((800, 800)),
-        transforms.ToTensor(),
-    ])
+    transform = transforms.Resize((800,800))
     dataset = PennFudanDataset(DATA_ROOT, transforms=transform)
     # split 80/20
     n_train = int(0.8 * len(dataset))
